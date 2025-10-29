@@ -11,21 +11,6 @@ import SwiftUI
 import Combine
 import CoreLocation
 
-// MARK: - AR Tracking States
-
-enum ARTrackingState: String, CaseIterable, Sendable {
-    case initializing = "Initializing AR..."
-    case searchingForHomePlate = "Searching for Home Plate"
-    case aligningHomePlate = "Aligning Home Plate"
-    case fieldPlaced = "Field Placed"
-    case trackingSpeed = "Tracking Speed"
-    case error = "Error"
-    
-    var displayText: String {
-        return self.rawValue
-    }
-}
-
 // MARK: - AR Tracking Service Protocol
 
 protocol ARTrackingServiceProtocol: ObservableObject {
@@ -41,7 +26,7 @@ protocol ARTrackingServiceProtocol: ObservableObject {
     func stopTracking()
     func placeHomePlate(at location: CGPoint) async
     func resetTracking()
-    func showPositioningControls()
+    func displayPositioningControls()
     func hidePositioningControls()
     func adjustOrientation(_ angle: Double)
     func adjustPosition(x: Double, y: Double, z: Double)
@@ -101,9 +86,7 @@ final class ARTrackingService: NSObject, ARTrackingServiceProtocol {
         // Set up location manager
         setupLocationManager()
         
-        // Initialize AR session
-        await setupARSession()
-        
+        // Don't setup AR session here - let ARViewController handle it
         trackingState = .searchingForHomePlate
     }
     
@@ -115,25 +98,11 @@ final class ARTrackingService: NSObject, ARTrackingServiceProtocol {
         trackingState = .searchingForHomePlate
         isTracking = true
         
-        // Configure AR session
-        let configuration = ARWorldTrackingConfiguration()
-        configuration.planeDetection = [.horizontal]
-        configuration.environmentTexturing = .automatic
-        configuration.isLightEstimationEnabled = true
-        
-        // Add geo location support if available
-        if ARGeoTrackingConfiguration.isSupported {
-            configuration.geoTrackingEnabled = true
-        }
-        
-        // Start session
-        arSession?.run(configuration, options: [.resetTracking, .removeExistingAnchors])
-        
-        print("✅ AR Tracking started")
+        print("✅ AR Tracking Service ready")
     }
     
     func stopTracking() {
-        arSession?.pause()
+        // Don't pause arSession here - let ARViewController handle it
         ballTracker?.stopTracking()
         isTracking = false
         trackingState = .error
@@ -147,10 +116,30 @@ final class ARTrackingService: NSObject, ARTrackingServiceProtocol {
             return
         }
         
-        // Convert screen point to world position
-        let hitTestResults = sceneView.hitTest(location, types: [.existingPlaneUsingExtent, .estimatedHorizontalPlane])
+        // Convert screen point to world position using modern raycast API
+        let raycastQuery: ARRaycastQuery?
+        if #available(iOS 14.0, *) {
+            raycastQuery = sceneView.raycastQuery(from: location, allowing: .estimatedPlane, alignment: .horizontal)
+        } else {
+            // Fallback for older iOS versions
+            let hitTestResults = sceneView.hitTest(location, types: [.existingPlaneUsingExtent, .estimatedHorizontalPlane])
+            guard let hitResult = hitTestResults.first else {
+                print("❌ No suitable plane found for home plate placement")
+                return
+            }
+            let worldPosition = hitResult.worldTransform.columns.3
+            await createHomePlateNode(at: SCNVector3(worldPosition.x, worldPosition.y, worldPosition.z))
+            return
+        }
         
-        guard let hitResult = hitTestResults.first else {
+        guard let query = raycastQuery else {
+            print("❌ Could not create raycast query")
+            return
+        }
+        
+        let raycastResults = sceneView.session.raycast(query)
+        
+        guard let hitResult = raycastResults.first else {
             print("❌ No suitable plane found for home plate placement")
             return
         }
@@ -179,13 +168,16 @@ final class ARTrackingService: NSObject, ARTrackingServiceProtocol {
         
         // Create field configuration
         let configuration = FieldConfiguration(
-            homePlatePosition: FieldLocation(
+            homePlatePosition: BallPosition(
                 x: Double(worldPosition.x),
                 y: Double(worldPosition.y),
                 z: Double(worldPosition.z)
             ),
-            fieldOrientation: fieldOrientationAngle,
-            dimensions: FieldDimensions.standard
+            strikeZoneBounds: StrikeZoneBounds(
+                min: BallPosition(x: -0.2, y: 0.3, z: -0.2),
+                max: BallPosition(x: 0.2, y: 1.5, z: 0.2)
+            ),
+            fieldDimensions: FieldDimensions.standard
         )
         
         fieldConfiguration = configuration
@@ -226,8 +218,10 @@ final class ARTrackingService: NSObject, ARTrackingServiceProtocol {
         configuration.environmentTexturing = .automatic
         configuration.isLightEstimationEnabled = true
         
-        if ARGeoTrackingConfiguration.isSupported {
-            configuration.geoTrackingEnabled = true
+        if #available(iOS 14.0, *) {
+            if ARGeoTrackingConfiguration.isSupported {
+                // Geo tracking configuration would be set separately
+            }
         }
         
         arSession?.run(configuration, options: [.resetTracking, .removeExistingAnchors])
@@ -235,8 +229,8 @@ final class ARTrackingService: NSObject, ARTrackingServiceProtocol {
         print("✅ AR tracking reset complete")
     }
     
-    func showPositioningControls() {
-        showPositioningControls = true
+    func displayPositioningControls() {
+        self.showPositioningControls = true
         print("🎛️ Showing positioning controls")
     }
     
@@ -263,12 +257,115 @@ final class ARTrackingService: NSObject, ARTrackingServiceProtocol {
         hidePositioningControls()
         
         // Update field configuration with final values
-        if var config = fieldConfiguration {
-            config.fieldOrientation = fieldOrientationAngle
-            fieldConfiguration = config
-        }
+        // Note: FieldConfiguration doesn't have fieldOrientation property
+        // This would be handled by the positioning system separately
         
         print("✅ Positioning confirmed")
+    }
+    
+    // MARK: - Field Lines and Ball Tracking
+    
+    private func createFieldLines(at homePlatePosition: SCNVector3) async {
+        guard let sceneView = sceneView else { return }
+        
+        // Create infield diamond lines
+        let diamondLines = createInfieldDiamond(at: homePlatePosition)
+        sceneView.scene.rootNode.addChildNode(diamondLines)
+        
+        // Create strike zone
+        let strikeZone = createStrikeZone(at: homePlatePosition)
+        sceneView.scene.rootNode.addChildNode(strikeZone)
+        
+        print("✅ Field lines created")
+    }
+    
+    private func createInfieldDiamond(at position: SCNVector3) -> SCNNode {
+        let diamondNode = SCNNode()
+        
+        // Diamond dimensions (in meters)
+        let baseDistance: Float = 27.43 // 90 feet
+        
+        // Create lines for the diamond
+        let points = [
+            position, // Home plate
+            SCNVector3(position.x + baseDistance, position.y, position.z), // First base
+            SCNVector3(position.x + baseDistance, position.y, position.z + baseDistance), // Second base
+            SCNVector3(position.x, position.y, position.z + baseDistance), // Third base
+            position // Back to home plate
+        ]
+        
+        for i in 0..<points.count - 1 {
+            let line = createLine(from: points[i], to: points[i + 1])
+            diamondNode.addChildNode(line)
+        }
+        
+        return diamondNode
+    }
+    
+    private func createStrikeZone(at position: SCNVector3) -> SCNNode {
+        let strikeZoneNode = SCNNode()
+        
+        // Strike zone dimensions (in meters)
+        let width: Float = 0.43 // 17 inches
+        let height: Float = 1.2 // 4 feet
+        
+        // Create strike zone box
+        let boxGeometry = SCNBox(width: CGFloat(width), height: CGFloat(height), length: 0.01, chamferRadius: 0)
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor.green.withAlphaComponent(0.3)
+        boxGeometry.materials = [material]
+        
+        let boxNode = SCNNode(geometry: boxGeometry)
+        boxNode.position = SCNVector3(position.x, position.y + height/2, position.z)
+        strikeZoneNode.addChildNode(boxNode)
+        
+        return strikeZoneNode
+    }
+    
+    private func createLine(from start: SCNVector3, to end: SCNVector3) -> SCNNode {
+        let lineNode = SCNNode()
+        
+        let distance = sqrt(pow(end.x - start.x, 2) + pow(end.y - start.y, 2) + pow(end.z - start.z, 2))
+        
+        let cylinder = SCNCylinder(radius: 0.01, height: CGFloat(distance))
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor.white
+        cylinder.materials = [material]
+        
+        let cylinderNode = SCNNode(geometry: cylinder)
+        cylinderNode.position = SCNVector3(
+            (start.x + end.x) / 2,
+            (start.y + end.y) / 2,
+            (start.z + end.z) / 2
+        )
+        
+        // Rotate cylinder to align with line direction
+        let direction = SCNVector3(end.x - start.x, end.y - start.y, end.z - start.z)
+        let angle = atan2(direction.x, direction.z)
+        cylinderNode.eulerAngles = SCNVector3(0, angle, 0)
+        
+        lineNode.addChildNode(cylinderNode)
+        return lineNode
+    }
+    
+    // MARK: - Ball Tracking
+    
+    func startBallTracking() async {
+        // Start ball detection and tracking
+        do {
+            try await ballTracker?.startTracking()
+            trackingState = .trackingSpeed
+            print("🎯 Ball tracking started")
+        } catch {
+            print("❌ Failed to start ball tracking: \(error)")
+            trackingState = .error
+        }
+    }
+    
+    func stopBallTracking() {
+        ballTracker?.stopTracking()
+        trackingState = .fieldPlaced
+        print("⏹️ Ball tracking stopped")
     }
     
     // MARK: - Private Methods
@@ -323,6 +420,9 @@ final class ARTrackingService: NSObject, ARTrackingServiceProtocol {
         sceneView?.scene.rootNode.addChildNode(node)
         homePlateNode = node
         
+        // Create field lines after home plate is placed
+        await createFieldLines(at: position)
+        
         print("✅ Home plate node created at: \(position)")
     }
     
@@ -336,12 +436,12 @@ final class ARTrackingService: NSObject, ARTrackingServiceProtocol {
         
         // Pentagon points
         let points = [
-            CGPoint(x: 0, y: height/2),           // Top
-            CGPoint(x: width/2, y: height/4),    // Top right
-            CGPoint(x: width/2, y: -height/4),   // Bottom right
-            CGPoint(x: 0, y: -height/2),         // Bottom point
-            CGPoint(x: -width/2, y: -height/4),  // Bottom left
-            CGPoint(x: -width/2, y: height/4)     // Top left
+            CGPoint(x: 0, y: Int(height/2)),           // Top
+            CGPoint(x: Int(width/2), y: Int(height/4)),    // Top right
+            CGPoint(x: Int(width/2), y: Int(-height/4)),   // Bottom right
+            CGPoint(x: 0, y: Int(-height/2)),         // Bottom point
+            CGPoint(x: Int(-width/2), y: Int(-height/4)),  // Bottom left
+            CGPoint(x: Int(-width/2), y: Int(height/4))     // Top left
         ]
         
         path.move(to: points[0])
@@ -465,7 +565,7 @@ extension ARTrackingService: BallTrackerDelegate {
 extension ARTrackingService: FieldMappingDelegate {
     func didCompleteFieldMapping(_ configuration: FieldConfiguration) {
         self.fieldConfiguration = configuration
-        trackingState = .fieldReady
+        trackingState = .fieldPlaced
     }
     
     func didFailFieldMapping(_ error: Error) {

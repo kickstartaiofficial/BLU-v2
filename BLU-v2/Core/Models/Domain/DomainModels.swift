@@ -90,7 +90,7 @@ struct FieldLocation: Codable, Sendable {
     }
 }
 
-struct BallPosition: Codable, Sendable {
+struct BallPosition: Sendable {
     let x: Double
     let y: Double
     let z: Double
@@ -104,7 +104,31 @@ struct BallPosition: Codable, Sendable {
     }
 }
 
-struct GameStatistics: Codable, Sendable {
+// MARK: - BallPosition Codable Extension
+extension BallPosition: Codable {
+    enum CodingKeys: String, CodingKey {
+        case x, y, z, timestamp
+    }
+    
+    nonisolated init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.x = try container.decode(Double.self, forKey: .x)
+        self.y = try container.decode(Double.self, forKey: .y)
+        self.z = try container.decode(Double.self, forKey: .z)
+        self.timestamp = try container.decode(Date.self, forKey: .timestamp)
+    }
+    
+    nonisolated func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(x, forKey: .x)
+        try container.encode(y, forKey: .y)
+        try container.encode(z, forKey: .z)
+        try container.encode(timestamp, forKey: .timestamp)
+    }
+}
+
+@Model
+final class GameStatistics {
     var totalPitches: Int
     var strikes: Int
     var balls: Int
@@ -121,7 +145,7 @@ struct GameStatistics: Codable, Sendable {
         self.minSpeed = Double.infinity
     }
     
-    mutating func update(with pitch: PitchData) {
+    func update(with pitch: PitchData) {
         totalPitches += 1
         
         if pitch.isStrike {
@@ -140,14 +164,16 @@ struct GameStatistics: Codable, Sendable {
     }
 }
 
+
+
 // MARK: - AR Tracking State
 
 enum ARTrackingState: String, CaseIterable, Sendable {
     case initializing = "Initializing AR..."
-    case searchingForField = "Searching for field..."
-    case calibratingField = "Calibrating field..."
-    case fieldReady = "Field ready"
-    case trackingBall = "Tracking ball"
+    case searchingForHomePlate = "Searching for Home Plate"
+    case aligningHomePlate = "Aligning Home Plate"
+    case fieldPlaced = "Field Placed"
+    case trackingSpeed = "Tracking Speed"
     case error = "Error"
     
     var displayText: String {
@@ -156,7 +182,7 @@ enum ARTrackingState: String, CaseIterable, Sendable {
     
     var isActive: Bool {
         switch self {
-        case .trackingBall, .fieldReady:
+        case .trackingSpeed, .fieldPlaced:
             return true
         default:
             return false
