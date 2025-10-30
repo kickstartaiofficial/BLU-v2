@@ -9,13 +9,14 @@ import SwiftUI
 
 struct ConnectionModeView: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedMode: ConnectionMode? = nil
+    
+    // Optional callback for mode selection (can be used by parent view)
+    var onModeSelected: ((ConnectionMode) -> Void)? = nil
     
     enum ConnectionMode: String, CaseIterable {
-        case hostGame = "Host Game"
+        case hostGame = "Umpire Mode"
         case rejoinSession = "Rejoin Session"
-        case joinGame = "Join Game"
-        case playSolo = "Play Solo"
+        case joinGame = "Spectator Mode"
         
         var icon: String {
             switch self {
@@ -25,8 +26,6 @@ struct ConnectionModeView: View {
                 return "arrow.clockwise.circle"
             case .joinGame:
                 return "wifi"
-            case .playSolo:
-                return "person"
             }
         }
         
@@ -37,9 +36,7 @@ struct ConnectionModeView: View {
             case .rejoinSession:
                 return "Resume hosting an existing session"
             case .joinGame:
-                return "Connect to another player's session"
-            case .playSolo:
-                return "Play without peer connection"
+                return "Connect to a game as a spectator session"
             }
         }
     }
@@ -127,7 +124,7 @@ struct ConnectionModeView: View {
                 .foregroundColor(.primary)
                 .padding(.bottom, 24)
             
-            // Mode Options
+            // Mode Options - navigate immediately on tap
             VStack(spacing: 0) {
                 ForEach(ConnectionMode.allCases, id: \.self) { mode in
                     connectionModeRow(mode: mode)
@@ -138,23 +135,6 @@ struct ConnectionModeView: View {
                     }
                 }
             }
-            
-            Spacer()
-            
-            // Select Mode Button
-            Button(action: selectMode) {
-                HStack {
-                    Text("→ Select Mode")
-                    Image(systemName: "arrow.right")
-                }
-                .font(.headline)
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(selectedMode != nil ? Color.blue : Color.gray)
-                .cornerRadius(12)
-            }
-            .disabled(selectedMode == nil)
         }
         .padding(20)
         .background(.ultraThinMaterial)
@@ -167,7 +147,8 @@ struct ConnectionModeView: View {
     
     private func connectionModeRow(mode: ConnectionMode) -> some View {
         Button(action: {
-            selectedMode = mode
+            // Navigate immediately on tap - no delay, no checkbox needed
+            selectMode(mode)
         }) {
             HStack(spacing: 12) {
                 // Icon
@@ -191,38 +172,25 @@ struct ConnectionModeView: View {
                 
                 Spacer()
                 
-                // Radio Button
-                Image(systemName: selectedMode == mode ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor(selectedMode == mode ? .blue : .gray)
-                    .font(.title3)
+                // Navigation arrow - indicates immediate navigation
+                Image(systemName: "chevron.right")
+                    .foregroundColor(.blue)
+                    .font(.caption)
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle()) // Make entire row tappable
+            .background(Color.clear)
         }
-        .buttonStyle(PlainButtonStyle())
+        .buttonStyle(.plain)
     }
     
     // MARK: - Actions
     
-    private func selectMode() {
-        guard let mode = selectedMode else { return }
+    private func selectMode(_ mode: ConnectionMode) {
+        // Call parent callback if provided
+        onModeSelected?(mode)
         
-        // Handle mode selection
-        switch mode {
-        case .hostGame:
-            // Navigate to session setup for hosting
-            break
-        case .rejoinSession:
-            // Navigate to session rejoin
-            break
-        case .joinGame:
-            // Navigate to join session
-            break
-        case .playSolo:
-            // Navigate directly to AR tracking
-            break
-        }
-        
-        // For now, just dismiss to main content
+        // Dismiss the view
         dismiss()
     }
 }

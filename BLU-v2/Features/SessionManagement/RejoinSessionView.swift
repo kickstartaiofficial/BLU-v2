@@ -10,6 +10,7 @@ import SwiftUI
 struct RejoinSessionView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var sessionManager = SessionManager()
+    @AppStorage("lastSessionCode") private var lastSessionCode: String = ""
     
     @State private var sessionCode: String = ""
     @State private var errorMessage: String = ""
@@ -38,23 +39,29 @@ struct RejoinSessionView: View {
                     Button(action: { dismiss() }) {
                         HStack {
                             Image(systemName: "chevron.left")
-                            Text("Back")
                         }
                         .font(.headline)
                         .foregroundColor(.white)
-                        .padding(20)
+                        .frame(width: 30, height: 30)
                         .background(.ultraThinMaterial)
-                        .cornerRadius(15)
+                        .cornerRadius(8)
                     }
                     Spacer()
                 }
-                .padding(.top, 50)
-                .padding(.leading, 20)
+                .padding(8)
+                //.padding(.top, 50)
+                //.padding(.leading, 20)
                 
                 Spacer()
             }
         }
         .ignoresSafeArea()
+        .onAppear {
+            // Pre-populate with last session code if available
+            if sessionCode.isEmpty && !lastSessionCode.isEmpty {
+                sessionCode = lastSessionCode
+            }
+        }
     }
     
     // MARK: - Background Image

@@ -43,7 +43,7 @@ final class GameSession {
 @Model
 final class PitchData {
     @Attribute(.unique) var id: String
-    var sessionId: String
+    var sessionCode: String
     var timestamp: Date
     var speed: Double // mph
     var isStrike: Bool
@@ -54,7 +54,7 @@ final class PitchData {
     
     init(
         id: String = UUID().uuidString,
-        sessionId: String,
+        sessionCode: String,
         speed: Double,
         isStrike: Bool,
         ballPosition: BallPosition,
@@ -63,7 +63,7 @@ final class PitchData {
         confidence: Double
     ) {
         self.id = id
-        self.sessionId = sessionId
+        self.sessionCode = sessionCode
         self.timestamp = Date()
         self.speed = speed
         self.isStrike = isStrike

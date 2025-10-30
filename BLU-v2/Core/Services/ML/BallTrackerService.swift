@@ -25,7 +25,8 @@ protocol BallTrackerServiceProtocol: ObservableObject {
     
     func startTracking() async throws
     func stopTracking()
-    func processFrame(_ frame: ARFrame) async
+    func processFrame(_ frame: ARFrame) async // Legacy - will be deprecated
+    func processFrameData(pixelBuffer: CVPixelBuffer, cameraTransform: simd_float4x4, timestamp: TimeInterval) async
 }
 
 // MARK: - Ball Tracker Service Implementation
@@ -46,10 +47,11 @@ final class BallTrackerService: NSObject, BallTrackerServiceProtocol {
     
     private var objectDetectionModel: VNCoreMLModel?
     private var ballStrikeModel: VNCoreMLModel?
-    private var processingQueue = DispatchQueue(label: "com.blu.balltracking", qos: .userInitiated)
+    // Serial processing queue to prevent frame accumulation
+    private let processingQueue = DispatchQueue(label: "com.blu.balltracking", qos: .userInitiated)
     private var isProcessingFrame = false
     private var lastProcessTime: TimeInterval = 0
-    private let processingInterval: TimeInterval = 0.0167 // 60 FPS
+    private let processingInterval: TimeInterval = 0.033 // ~30 FPS processing (skip every other frame if needed)
     
     // Ball tracking history
     private var ballPositions: [(position: BallPosition, timestamp: Date)] = []
@@ -81,22 +83,49 @@ final class BallTrackerService: NSObject, BallTrackerServiceProtocol {
     }
     
     func processFrame(_ frame: ARFrame) async {
-        guard isTracking,
-              !isProcessingFrame,
-              CACurrentMediaTime() - lastProcessTime > processingInterval else {
-            return
+        // Legacy method - extract data immediately to avoid retaining ARFrame
+        await processFrameData(
+            pixelBuffer: frame.capturedImage,
+            cameraTransform: frame.camera.transform,
+            timestamp: frame.timestamp
+        )
+    }
+    
+    func processFrameData(pixelBuffer: CVPixelBuffer, cameraTransform: simd_float4x4, timestamp: TimeInterval) async {
+        guard isTracking else { return }
+        
+        // Skip if already processing or too soon since last process
+        let currentTime = CACurrentMediaTime()
+        guard !isProcessingFrame,
+              currentTime - lastProcessTime > processingInterval else {
+            return // Skip this frame
         }
         
+        // Set processing flag immediately to prevent accumulation
         isProcessingFrame = true
-        lastProcessTime = CACurrentMediaTime()
+        lastProcessTime = currentTime
         
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { [weak self] in
-                await self?.performBallDetection(frame: frame)
+        // Process frame on background queue to avoid blocking and frame retention
+        Task.detached { [weak self] in
+            guard let self = self else {
+                // Reset flag if self is nil
+                await MainActor.run {
+                    // Set flag back if service was deallocated
+                }
+                return
+            }
+            
+            await self.performBallDetection(
+                pixelBuffer: pixelBuffer,
+                cameraTransform: cameraTransform,
+                timestamp: timestamp
+            )
+            
+            // Reset processing flag after completion
+            await MainActor.run {
+                self.isProcessingFrame = false
             }
         }
-        
-        isProcessingFrame = false
     }
     
     // MARK: - Private Methods
@@ -124,18 +153,28 @@ final class BallTrackerService: NSObject, BallTrackerServiceProtocol {
         }
     }
     
-    private func performBallDetection(frame: ARFrame) async {
+    private func performBallDetection(
+        pixelBuffer: CVPixelBuffer,
+        cameraTransform: simd_float4x4,
+        timestamp: TimeInterval
+    ) async {
         guard let objectDetectionModel = objectDetectionModel else { return }
         
-        let pixelBuffer = frame.capturedImage
-        let orientation = getImageOrientation(for: frame)
+        // Get orientation from current device orientation (not from frame)
+        let orientation = getImageOrientation()
         
         let requestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
         
         do {
+            // Don't capture frame - pass only the data we need
             let request = VNCoreMLRequest(model: objectDetectionModel) { [weak self] request, error in
                 Task { @MainActor in
-                    await self?.handleObjectDetection(request: request, error: error, frame: frame)
+                    await self?.handleObjectDetection(
+                        request: request,
+                        error: error,
+                        cameraTransform: cameraTransform,
+                        timestamp: timestamp
+                    )
                 }
             }
             
@@ -147,7 +186,12 @@ final class BallTrackerService: NSObject, BallTrackerServiceProtocol {
         }
     }
     
-    private func handleObjectDetection(request: VNRequest, error: Error?, frame: ARFrame) async {
+    private func handleObjectDetection(
+        request: VNRequest,
+        error: Error?,
+        cameraTransform: simd_float4x4,
+        timestamp: TimeInterval
+    ) async {
         if let error = error {
             print("❌ Object detection error: \(error)")
             return
@@ -164,7 +208,11 @@ final class BallTrackerService: NSObject, BallTrackerServiceProtocol {
                 continue
             }
             
-            let ballPosition = await getWorldPosition(from: observation, frame: frame)
+            // Use camera transform for world position calculation (frame not needed)
+            let ballPosition = await getWorldPosition(
+                from: observation,
+                cameraTransform: cameraTransform
+            )
             let confidence = observation.confidence
             
             if let position = ballPosition {
@@ -196,15 +244,29 @@ final class BallTrackerService: NSObject, BallTrackerServiceProtocol {
         }
     }
     
-    private func getWorldPosition(from observation: VNRecognizedObjectObservation, frame: ARFrame) async -> (x: Double, y: Double, z: Double)? {
+    private func getWorldPosition(
+        from observation: VNRecognizedObjectObservation,
+        cameraTransform: simd_float4x4
+    ) async -> (x: Double, y: Double, z: Double)? {
         // Convert Vision coordinates to world coordinates
         let visionRect = observation.boundingBox
         _ = CGPoint(x: visionRect.midX, y: visionRect.midY)
         
-        // Perform hit test to find world position
-        // This would need to be implemented with proper AR hit testing
-        // For now, return a simulated position
-        return (x: Double.random(in: -1...1), y: Double.random(in: 0...2), z: Double.random(in: -1...1))
+        // Use camera transform for world position calculation
+        // This would need proper AR raycast/hit testing implementation
+        // For now, return a simulated position based on camera transform
+        let cameraPosition = SIMD3<Float>(
+            cameraTransform.columns.3.x,
+            cameraTransform.columns.3.y,
+            cameraTransform.columns.3.z
+        )
+        
+        // Simulated position (would use actual raycast in production)
+        return (
+            x: Double(cameraPosition.x + Float.random(in: -1...1)),
+            y: Double(cameraPosition.y + Float.random(in: 0...2)),
+            z: Double(cameraPosition.z + Float.random(in: -1...1))
+        )
     }
     
     private func trackBallPosition(_ position: BallPosition) {
@@ -247,7 +309,7 @@ final class BallTrackerService: NSObject, BallTrackerServiceProtocol {
         return strikeZoneBounds.contains(ballPosition)
     }
     
-    private func getImageOrientation(for frame: ARFrame) -> CGImagePropertyOrientation {
+    private func getImageOrientation() -> CGImagePropertyOrientation {
         let orientation = UIDevice.current.orientation
         switch orientation {
         case .portrait: return .right

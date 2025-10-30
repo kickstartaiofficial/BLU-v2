@@ -38,18 +38,19 @@ struct JoinSessionView: View {
                     Button(action: { dismiss() }) {
                         HStack {
                             Image(systemName: "chevron.left")
-                            Text("Back")
                         }
                         .font(.headline)
                         .foregroundColor(.white)
-                        .padding(20)
+                        .frame(width: 30, height: 30)
+                        //.padding(10)
                         .background(.ultraThinMaterial)
-                        .cornerRadius(15)
+                        .cornerRadius(8)
                     }
                     Spacer()
                 }
-                .padding(.top, 50)
-                .padding(.leading, 20)
+                .padding(8)
+                //.padding(.top, 50)
+                //.padding(.leading, 20)
                 
                 Spacer()
             }
