@@ -47,17 +47,37 @@ final class SessionManager: NSObject, SessionManagerProtocol {
     
     // MARK: - Public Methods
     
+    // Protocol requirement
     func startHostingSession(name: String) async throws -> String {
-        // Generate session code
+        return try await startHostingSession(name: name, fieldLocation: nil)
+    }
+    
+    // Convenience method with optional field location
+    func startHostingSession(name: String, fieldLocation: FieldLocation?) async throws -> String {
+        // Generate session code (matches reference project pattern)
         let sessionCode = generateSessionCode()
+        
+        // Create local session with session code as ID (matches reference project)
+        currentSession = GameSession(
+            id: sessionCode,  // Use session code as ID
+            name: name,
+            fieldLocation: fieldLocation
+        )
         
         // Update local state
         isHosting = true
         isJoined = false
         connectionStatus = "Hosting: \(sessionCode)"
         
-        // Create local session
-        currentSession = GameSession(name: name)
+        // Store session code for persistence/rejoin
+        UserDefaults.standard.set(sessionCode, forKey: "lastSessionCode")
+        UserDefaults.standard.set(name, forKey: "lastSessionName")
+        
+        // Store coordinates if available
+        if let location = fieldLocation {
+            UserDefaults.standard.set(location.latitude, forKey: "lastSessionLatitude")
+            UserDefaults.standard.set(location.longitude, forKey: "lastSessionLongitude")
+        }
         
         print("✅ Started hosting session: \(sessionCode)")
         return sessionCode
@@ -143,6 +163,25 @@ final class SessionManager: NSObject, SessionManagerProtocol {
         print("👋 Left session")
     }
     
+    /// Update the current session's field location with GPS coordinates
+    @MainActor
+    func updateSessionLocation(_ fieldLocation: FieldLocation) {
+        guard let session = currentSession else {
+            print("⚠️ Cannot update location: No active session")
+            return
+        }
+        
+        // Update session's field location
+        session.fieldLocation = fieldLocation
+        session.updatedAt = Date()
+        
+        // Store coordinates in UserDefaults for persistence (for rejoin functionality)
+        UserDefaults.standard.set(fieldLocation.latitude, forKey: "lastSessionLatitude")
+        UserDefaults.standard.set(fieldLocation.longitude, forKey: "lastSessionLongitude")
+        
+        print("📍 Updated session location for session \(session.id): \(fieldLocation.latitude), \(fieldLocation.longitude)")
+    }
+    
     func broadcastPitch(_ pitch: PitchData) async throws {
         guard isHosting,
               let session = currentSession else {
@@ -159,7 +198,8 @@ final class SessionManager: NSObject, SessionManagerProtocol {
     // MARK: - Private Methods
     
     private func generateSessionCode() -> String {
-        return String(format: "%06d", Int.random(in: 100000...999999))
+        // Match reference project: Generate 6-digit code with leading zeros (000000-999999)
+        return String(format: "%06d", Int.random(in: 0...999999))
     }
 }
 

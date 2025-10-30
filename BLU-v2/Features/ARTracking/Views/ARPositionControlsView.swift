@@ -6,97 +6,49 @@
 //
 
 import SwiftUI
+import CoreLocation
 
 struct ARPositionControlsView: View {
-    // MARK: - Bindings
+    // MARK: - Properties
     
-    @Binding var xRange: ClosedRange<Double>
-    @Binding var yRange: ClosedRange<Double>
-    @Binding var angleRange: ClosedRange<Double>
+    @ObservedObject var arTrackingService: ARTrackingService
     @Binding var showFieldLines: Bool
+    let onDone: () -> Void
+    let onCancel: () -> Void
     
     @State private var guiSize: Double = 350
-    @State private var angleDegrees: Double = 89
-    @State private var xMeters: Double = 0.04
-    @State private var yMeters: Double = 0.0
+    @State private var angleDegrees: Double = 0.0
+    @State private var xMeters: Double = 0.0
+    @State private var zMeters: Double = 0.0
+    
+    // Ranges (20cm = 0.2m for position, 45 degrees for rotation)
+    private let angleRange: ClosedRange<Double> = -45...45
+    private let xRange: ClosedRange<Double> = -0.2...0.2  // 20cm left/right
+    private let zRange: ClosedRange<Double> = -0.2...0.2  // 20cm forward/backward
+    
+    // Increments
+    private let angleStep: Double = 0.5  // 0.5 degrees
+    private let positionStep: Double = 0.005  // 0.5cm = 0.005m
     
     // MARK: - Body
     
     var body: some View {
-        ZStack() {
-            // Center Content
-            arPositionControls
-            
-            HStack(spacing: 15) {
-                // Left Side Controls
-                leftSideControls
-                
-                Spacer()
-                
-                // Right Side Controls
-                rightSideControls
-            }
-            .padding()
-        }
-    }
-    
-    // MARK: - Left Side Controls
-    
-    private var leftSideControls: some View {
-        VStack(spacing: 5) {
-            // Scan/Place Button
-            ARControlButton(
-                icon: "location",
-                label: "Scan for Home Plate",
-                isHighlighted: true,
-                color: .green
-            )
-            
-            Spacer()
-            
-            // Adjust Orientation Button
-            ARControlButton(
-                icon: "location.north.line.fill",
-                label: "Adjust orientation",
-                color: .green
-            )
-            
-            Spacer()
-            
-            // Show Field Lines Toggle
-            ARControlButton(
-                icon: "grid",
-                label: "Show Field Lines",
-                color: showFieldLines ? .green : .gray,
-                action: {
-                    showFieldLines.toggle()
-                }
-            )
-            
-            Spacer()
-            
-            // Reset Tracking
-            ARControlButton(
-                icon: "arrow.clockwise",
-                label: "Reset Tracking",
-                color: .red
-            )
-        }
-        .frame(maxWidth: 150)
+        arPositionControls
     }
     
     // MARK: - Center Controls
+    
     private var arPositionControls: some View {
         
-        ZStack(alignment: .center) {
+        ZStack() {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(.ultraThinMaterial) // nice translucent effect
+                .fill(Color.black.opacity(0.1)) // nice translucent effect
                 .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .stroke(Color.white.opacity(0.15), lineWidth: 1)
                 )
 
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(spacing: 8) {
                 // Title
                 Text("Field Adjustments")
                     .font(.title2.weight(.semibold))
@@ -113,28 +65,41 @@ struct ARPositionControlsView: View {
                         LabeledSliderRow(
                             icon: Image(systemName: "arrow.trianglehead.clockwise.rotate.90"),
                             title: "",
-                            valueText: "\(Int(angleDegrees))°",
+                            valueText: String(format: "%.1f°", angleDegrees),
                             value: $angleDegrees,
-                            range: angleRange
+                            range: angleRange,
+                            step: angleStep,
+                            onChange: { newValue in
+                                // Direct call - debouncing handled in ARTrackingService
+                                arTrackingService.adjustOrientation(newValue)
+                            }
                         )
                         .frame(minHeight: guiSize/12)
                         .padding(8)
-
-                        // Pentagram
-                        Image(systemName: "pentagon")
-                            .font(Font.system(size: 80, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .padding(8)
-                            .frame(alignment: .center)
-                            .rotationEffect(.degrees(-180))
                         
-                        // Left/Right slider
+                        ZStack{
+                            // Home Plate Icon
+                            HomePlateIcon(size: 100, strokeWidth: 3, color: .white)
+                                .shadow(color: .green.opacity(0.6), radius: 8)
+                                .padding(8)
+                                .frame(alignment: .center)
+                            
+                            Image(systemName: "location.viewfinder")
+                                .font(.title)
+                        }
+                                                
+                        // Left/Right slider (X-axis)
                         LabeledSliderRow(
                             icon: Image(systemName: "arrow.left.and.right.circle"),
                             title: "",
-                            valueText: String(format: "", xMeters),
+                            valueText: String(format: "%.2fcm", xMeters * 100),  // Display in cm
                             value: $xMeters,
-                            range: xRange
+                            range: xRange,
+                            step: positionStep,
+                            onChange: { newValue in
+                                // Direct call - debouncing handled in ARTrackingService
+                                arTrackingService.adjustPosition(x: newValue, y: 0.0, z: zMeters)
+                            }
                         )
                         .frame(minHeight: guiSize/12)
                         .padding(8)
@@ -142,18 +107,22 @@ struct ARPositionControlsView: View {
                     
                     HStack(alignment: .bottom) {
                 
-                        // Up/Down slider
+                        // Forward/Backward slider (Z-axis)
                         VStack {
-                            Slider(value: $yMeters, in: yRange)
+                            Slider(value: $zMeters, in: zRange, step: positionStep)
                                 .tint(.white)
                                 .rotationEffect(.degrees(-90))
                                 .frame(width: 180, height: 44)
+                                .onChange(of: zMeters) { _, newValue in
+                                    // Direct call - debouncing handled in ARTrackingService
+                                    arTrackingService.adjustPosition(x: xMeters, y: 0.0, z: -newValue)
+                                }
                         }
                         .frame(width: 44, height: 150)
                                                 
-                        // Up/Down Icon
+                        // Forward/Backward Icon
                         VStack {
-                            Image(systemName: "arrow.up.and.down.circle")
+                            Image(systemName: "arrow.up.and.down.circle")  // This represents forward/backward in AR space
                             Spacer()
                         }
                         
@@ -173,7 +142,16 @@ struct ARPositionControlsView: View {
                             .padding(.vertical, 10)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.orange)
+                    .tint(.red.opacity(0.5))
+                    
+                    Button(action: cancelScreen) {
+                        Text("Cancel")
+                            .fontWeight(.bold)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange.opacity(0.5))
 
                     Button(action: acceptPosition) {
                         Text("Done")
@@ -183,31 +161,78 @@ struct ARPositionControlsView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .foregroundStyle(.white)
-                    .tint(.green)
+                    .tint(.green.opacity(0.5))
                 }
                 .padding(8)
 
+                gpsCoordinatesDisplay
+                    .padding(.bottom, 15)
             }
-            HStack(alignment: .top, spacing: 16) {
-                
-            }
-            .padding(12)
         }
         .padding(24)
-        .frame(width: guiSize, height: guiSize)
+        .frame(width: guiSize*1.3, height: guiSize)
+    }
+    
+    // MARK: - GPS Coordinates Display
+    
+    private var gpsCoordinatesDisplay: some View {
+        HStack(spacing: 2) {
+            if let location = arTrackingService.currentLocation {
+                HStack(spacing: 2) {
+                    Image(systemName: "location")
+                        .foregroundStyle(.white.opacity(0.9))
+                    
+                    Text("Lat.: \(location.coordinate.latitude, specifier: "%.6f")°")
+                        .foregroundStyle(.white)
+                        .font(.caption.monospacedDigit())
+                    
+                    Text("Long.: \(location.coordinate.longitude, specifier: "%.6f")°")
+                        .foregroundStyle(.white)
+                        .font(.caption.monospacedDigit())
+                    
+                    if location.altitude != -1 {
+                        Text("Alt.: \(location.altitude, specifier: "%.1f")m")
+                            .foregroundStyle(.white)
+                            .font(.caption.monospacedDigit())
+                    }
+                }
+            } else {
+                Text("Location unavailable")
+                    .foregroundStyle(.white.opacity(0.6))
+                    .font(.caption)
+            }
+        }
     }
     
     // MARK: - Actions
     private func resetAll() {
-        angleDegrees = 89
-        xMeters = 0.04
-        yMeters = 0.0
+        // Reset AR tracking - removes anchoring and closes the slider screen
+        arTrackingService.resetTracking()
+        
+        // Reset local state
+        angleDegrees = 0.0
+        xMeters = 0.0
+        zMeters = 0.0
+        
+        // Close the positioning controls screen
+        onCancel()
     }
-
+    
+    private func cancelScreen() {
+        // Just close the positioning controls screen without changing anything
+        onCancel()
+    }
+    
     private func acceptPosition() {
-        // Hook for dismissing or applying changes
-        // e.g., notify a view model or environment
-        print("Angle: \(angleDegrees), LR: \(xMeters), Height: \(yMeters)")
+        // IMPORTANT: Set slider values first, then confirm immediately
+        // The confirmPositioning() method will use these exact values to calculate anchor position
+        arTrackingService.adjustOrientation(angleDegrees)
+        arTrackingService.adjustPosition(x: xMeters, y: 0.0, z: zMeters)
+        
+        // Confirm positioning synchronously using the exact slider values we just set
+        // This ensures no jump because anchor is calculated from slider values, not container position
+        arTrackingService.confirmPositioning()
+        onDone()
     }
     
     // MARK: - Labeled horizontal slider row
@@ -217,6 +242,8 @@ struct ARPositionControlsView: View {
         let valueText: String
         @Binding var value: Double
         let range: ClosedRange<Double>
+        let step: Double
+        let onChange: ((Double) -> Void)?
 
         var body: some View {
             VStack(alignment: .leading, spacing: 8) {
@@ -232,130 +259,12 @@ struct ARPositionControlsView: View {
                         .font(.subheadline.monospacedDigit())
                 }
 
-                Slider(value: $value, in: range)
+                Slider(value: $value, in: range, step: step)
                     .tint(.white)
+                    .onChange(of: value) { _, newValue in
+                        onChange?(newValue)
+                    }
             }
-        }
-    }
-    
-    // MARK: - Right Side Controls
-    private var rightSideControls: some View {
-        VStack(spacing: 5) {
-            // Track Ball Button
-            ARControlButton(
-                icon: "figure.baseball",
-                label: "Track Ball",
-                color: .red
-            )
-            
-            Spacer()
-            
-            // Record Session Button
-            ARControlButton(
-                icon: "camera.fill",
-                label: "Record Session",
-                color: .red
-            )
-            
-            Spacer()
-            
-            // Info Button
-            ARControlButton(
-                icon: "info.circle",
-                label: "Toggle Tooltips",
-                color: .green
-            )
-        }
-        .frame(maxWidth: 150)
-    }
-    
-    // MARK: - Helper Views
-    
-    private func positionSlider(label: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
-        VStack(spacing: 5) {
-            Text(label)
-                .font(.caption)
-                .foregroundColor(.white)
-            
-            Slider(value: value, in: range)
-                .tint(.blue)
-                .frame(width: 80)
-            
-            Text(String(format: "%.2f", value.wrappedValue))
-                .font(.caption2)
-                .foregroundColor(.gray)
-        }
-    }
-}
-
-// MARK: - AR Control Button
-
-struct ARControlButton: View {
-    let icon: String
-    let label: String
-    var isHighlighted: Bool = false
-    var color: Color = .blue
-    var action: (() -> Void)? = nil
-    
-    var body: some View {
-        Button(action: {
-            action?()
-        }) {
-            VStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.title)
-                    .foregroundColor(.white)
-            }
-            .frame(width: 60, height: 60)
-            .background(.ultraThinMaterial)
-            .cornerRadius(30)
-            .overlay(
-                RoundedRectangle(cornerRadius: 30)
-                    .stroke(isHighlighted ? Color.yellow : color, lineWidth: isHighlighted ? 3 : 1)
-            )
-        }
-        .buttonStyle(PlainButtonStyle())
-        
-        Text(label)
-            .font(.caption2)
-            .foregroundColor(.white)
-            .multilineTextAlignment(.center)
-    }
-}
-
-// MARK: - Status Slider
-
-struct StatusSlider: View {
-    let value: Double
-    let activeColor: Color
-    
-    var body: some View {
-        VStack {
-            GeometryReader { geometry in
-                ZStack(alignment: .bottom) {
-                    // Background
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.gray.opacity(0.3))
-                        .frame(width: 20)
-                    
-                    // Active fill
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(activeColor)
-                        .frame(width: 20, height: geometry.size.height * value)
-                    
-                    // Indicator dot
-                    Circle()
-                        .fill(activeColor)
-                        .frame(width: 16, height: 16)
-                        .offset(y: -geometry.size.height * value)
-                }
-            }
-            .frame(height: 100)
-            
-            // Status label
-            Text(value >= 0.8 ? "Good" : "Poor")
-                .font(.caption2)
-                .foregroundColor(.white)
         }
     }
 }
@@ -367,10 +276,10 @@ struct StatusSlider: View {
         Color.gray.ignoresSafeArea()
         
         ARPositionControlsView(
-            xRange: .constant(-0.5...0.5),
-            yRange: .constant(-0.2...0.2),
-            angleRange: .constant(-90...90),
-            showFieldLines: .constant(true)
+            arTrackingService: ARTrackingService(),
+            showFieldLines: .constant(true),
+            onDone: {},
+            onCancel: {}
         )
     }
 }

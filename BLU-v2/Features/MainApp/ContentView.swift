@@ -19,24 +19,23 @@ struct ContentView: View {
     @State private var showingJoinSession = false
     @State private var showingRejoinSession = false
     @AppStorage("hasCompletedPermissions") private var hasCompletedPermissions = false
-    @State private var selectedMode: ConnectionMode? = nil
+    @AppStorage("lastSessionCode") private var lastSessionCode: String = ""
+    @AppStorage("lastSessionName") private var lastSessionName: String = ""
+    @State private var isCreatingSession = false
     
     enum ConnectionMode: String, CaseIterable {
         case hostGame = "host"
         case joinGame = "join"
         case rejoinSession = "rejoin"
-        case playSolo = "solo"
         
         var title: String {
             switch self {
             case .hostGame:
-                return "Host Game"
+                return "Umpire Mode"
             case .joinGame:
-                return "Join Game"
+                return "Spectator Mode"
             case .rejoinSession:
                 return "Rejoin Session"
-            case .playSolo:
-                return "Play Solo"
             }
         }
         
@@ -48,8 +47,6 @@ struct ContentView: View {
                 return "Connect to another player's session"
             case .rejoinSession:
                 return "Resume hosting an existing session"
-            case .playSolo:
-                return "Play without peer connection"
             }
         }
         
@@ -61,8 +58,6 @@ struct ContentView: View {
                 return "wifi"
             case .rejoinSession:
                 return "arrow.clockwise.circle"
-            case .playSolo:
-                return "person.fill"
             }
         }
     }
@@ -111,6 +106,7 @@ struct ContentView: View {
         }
         .fullScreenCover(isPresented: $showingARTracking) {
             ARBaseballTrackerView()
+                .environmentObject(sessionManager)
         }
         .task {
             await initializeApp()
@@ -186,7 +182,7 @@ struct ContentView: View {
                 .foregroundColor(.primary)
                 .padding(.bottom, 24)
             
-            // Mode Options
+            // Mode Options - navigate immediately on tap
             VStack(spacing: 0) {
                 ForEach(Array(ConnectionMode.allCases.enumerated()), id: \.element) { index, mode in
                     connectionModeRow(mode: mode)
@@ -197,23 +193,6 @@ struct ContentView: View {
                     }
                 }
             }
-            
-            Spacer()
-            
-            // Select Mode Button
-            Button(action: selectMode) {
-                HStack {
-                    Text("→ Select Mode")
-                    Image(systemName: "arrow.right")
-                }
-                .font(.headline)
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(selectedMode != nil ? Color.blue : Color.gray)
-                .cornerRadius(12)
-            }
-            .disabled(selectedMode == nil)
         }
         .padding(20)
         .background(.ultraThinMaterial)
@@ -226,7 +205,8 @@ struct ContentView: View {
     
     private func connectionModeRow(mode: ConnectionMode) -> some View {
         Button(action: {
-            selectedMode = mode
+            // Navigate immediately on tap - no delay, no checkbox needed
+            selectMode(mode)
         }) {
             HStack(spacing: 12) {
                 // Icon
@@ -250,14 +230,16 @@ struct ContentView: View {
                 
                 Spacer()
                 
-                // Radio Button
-                Image(systemName: selectedMode == mode ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor(selectedMode == mode ? .blue : .gray)
-                    .font(.title3)
+                // Navigation arrow - indicates immediate navigation
+                Image(systemName: "chevron.right")
+                    .foregroundColor(.blue)
+                    .font(.caption)
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle()) // Make entire row tappable
+            .background(Color.clear)
         }
-        .buttonStyle(PlainButtonStyle())
+        .buttonStyle(.plain)
     }
     
     // MARK: - Actions
@@ -268,23 +250,47 @@ struct ContentView: View {
         print("App initialized - Services ready")
     }
     
-    private func selectMode() {
-        guard let mode = selectedMode else { return }
-        
-        // Handle mode selection
+    private func selectMode(_ mode: ConnectionMode) {
+        // Navigate immediately based on selected mode - no delay
         switch mode {
         case .hostGame:
-            // Navigate to AR tracking for field placement
-            showingARTracking = true
+            // Create session before navigating to AR tracking
+            createHostSession()
         case .joinGame:
             // Navigate to join session screen
             showingJoinSession = true
         case .rejoinSession:
             // Navigate to rejoin session screen
             showingRejoinSession = true
-        case .playSolo:
-            // Navigate directly to AR tracking
-            showingARTracking = true
+        }
+    }
+    
+    private func createHostSession() {
+        guard !isCreatingSession else { return }
+        isCreatingSession = true
+        
+        Task {
+            do {
+                // Create session with device name
+                let sessionCode = try await sessionManager.startHostingSession(name: UIDevice.current.name)
+                
+                // Store session code for rejoin functionality
+                await MainActor.run {
+                    lastSessionCode = sessionCode
+                    lastSessionName = UIDevice.current.name
+                    isCreatingSession = false
+                    
+                    // Navigate to AR tracking after session is created
+                    showingARTracking = true
+                    print("✅ Session created: \(sessionCode) - Navigating to AR tracking")
+                }
+            } catch {
+                await MainActor.run {
+                    isCreatingSession = false
+                    print("❌ Failed to create session: \(error)")
+                    // Could show an alert here
+                }
+            }
         }
     }
     

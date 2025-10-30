@@ -12,18 +12,19 @@ import CoreLocation
 
 struct ARBaseballTrackerView: View {
     @StateObject private var arTrackingService = ARTrackingService()
+    @EnvironmentObject var sessionManager: SessionManager
+    @AppStorage("lastSessionCode") private var lastSessionCode: String = ""
     @Environment(\.dismiss) private var dismiss
     
     @State private var showPositioningControls = false
     @State private var isTracking = false
     @State private var currentSpeed: Double = 0.0
     @State private var showFieldLines = true
+    @State private var showTooltips = false
+    @State private var showSessionInfo = false
+    @State private var showWebView = false
     
-    // Positioning control values
-    @State private var orientationAngle: Double = 0.0
-    @State private var positionX: Double = 0.0
-    @State private var positionY: Double = 0.0
-    @State private var positionZ: Double = 0.0
+    let lightBlueColor = Color(red: 0.5, green: 0.7, blue: 1.0)
     
     var body: some View {
         ZStack {
@@ -35,22 +36,22 @@ struct ARBaseballTrackerView: View {
             )
             .ignoresSafeArea()
             
-            // Status Bar
-            statusBar
+            // Top Bar (Back Button + Session Code)
+            topBar
             
             // Green Pentagon Placement UI (only when home plate not placed)
             if !arTrackingService.isHomePlatePlaced {
                 greenPentagonPlacementView
             }
             
-            // Field Lines Toggle (only when home plate is placed)
-            if arTrackingService.isHomePlatePlaced {
-                fieldLinesToggle
-            }
-            
             // Positioning Controls Overlay
             if showPositioningControls {
                 positioningControlsOverlay
+            }
+            
+            // Session Info Card (slide-up)
+            if showSessionInfo {
+                sessionInfoCardOverlay
             }
             
             // Control Buttons
@@ -60,13 +61,31 @@ struct ARBaseballTrackerView: View {
             if arTrackingService.trackingState == .trackingSpeed {
                 ballSpeedDisplay
             }
+            
+        }
+        .fullScreenCover(isPresented: $showWebView) {
+            if let url = URL(string: "https://blu-baseball.web.app") {
+                WebViewScreen(url: url)
+            }
+        }
+        // Optimize sheet presentation to prevent hangs
+        .transaction { transaction in
+            transaction.animation = transaction.animation?.speed(1.0)
         }
         .task {
             await initializeAR()
+            // Ensure session is initialized if not already created
+            await ensureSessionInitialized()
         }
         .onAppear {
             // Ensure landscape orientation is locked
             AppDelegate.orientationLock = .landscape
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("UpdateSessionLocation"))) { notification in
+            guard let fieldLocation = notification.userInfo?["fieldLocation"] as? FieldLocation else { return }
+            Task { @MainActor in
+                sessionManager.updateSessionLocation(fieldLocation)
+            }
         }
         .onDisappear {
             // Clean up when view disappears
@@ -74,120 +93,101 @@ struct ARBaseballTrackerView: View {
         }
     }
     
-    // MARK: - Status Bar
+    // MARK: - Top Bar
     
-    private var statusBar: some View {
-        VStack {
+    private var topBar: some View {
+        VStack(spacing: 0) {
             HStack {
-                // Back Button
+                // Back Button (left)
                 Button(action: { dismiss() }) {
                     HStack {
                         Image(systemName: "chevron.left")
-                        Text("Back")
                     }
                     .font(.headline)
                     .foregroundColor(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+                    .frame(width: 30, height: 30)
                     .background(.ultraThinMaterial)
                     .cornerRadius(8)
                 }
                 
                 Spacer()
                 
-                // Tracking Status
-                VStack(alignment: .trailing) {
-                    Text("Status")
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.8))
-                    Text(arTrackingService.trackingState.displayText)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundColor(.white)
+                // Session Code (right)
+                if let sessionCode = sessionCode {
+                    sessionCodeDisplay(sessionCode: sessionCode)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(.ultraThinMaterial)
-                .cornerRadius(8)
             }
-            .padding(.top, 50)
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 8)
             
             Spacer()
+        }
+        .padding(.top) // Safe area top padding
+    }
+    
+    // MARK: - Session Code Display
+    
+    private func sessionCodeDisplay(sessionCode: String) -> some View {
+        Button(action: {
+            // Tap session code to show session info card
+            // Use async to prevent blocking main thread
+            Task { @MainActor in
+                showSessionInfo = true
+            }
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "number")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+                
+                Text("Session:")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+                
+                Text(sessionCode)
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial)
+            .cornerRadius(8)
         }
     }
     
     // MARK: - Green Pentagon Placement View
     
     private var greenPentagonPlacementView: some View {
-        VStack {
-            Spacer()
+        ZStack {
+            // Semi-transparent card
+            RoundedRectangle(cornerRadius: 20)
+                .fill(Color.black.opacity(0.3))
+                .frame(width: 350, height: 350)
             
-            HStack {
-                Spacer()
+            // Centered content: Green pentagon background with white pentagon and text
+            ZStack {
+                // Green Home Plate Icon (background layer)
+                HomePlateIcon(size: 300, strokeWidth: 4, color: .green)
+                    .opacity(0.6)
+                    .shadow(color: .green.opacity(0.8), radius: 12)
+                    .padding(.bottom, 70)
                 
-                VStack(spacing: 20) {
-                    // Green Pentagon Shape
-                    ZStack {
-                        // Semi-transparent green pentagon background
-                        RoundedRectangle(cornerRadius: 20)
-                            .fill(Color.black.opacity(0.7))
-                            .frame(width: 200, height: 120)
-                        
-                        VStack(spacing: 12) {
-                            // Home Plate Icon
-                            HomePlateIcon(size: 60, strokeWidth: 3, color: .white)
-                                .shadow(color: .green.opacity(0.6), radius: 8)
-                            
-                            Text("Tap to Place Home Plate")
-                                .foregroundColor(.white)
-                                .font(.headline)
-                                .fontWeight(.semibold)
-                                .multilineTextAlignment(.center)
-                        }
-                    }
+                // White Home Plate Icon and text (foreground layer)
+                VStack(spacing: 12) {
+                    HomePlateIcon(size: 100, strokeWidth: 3, color: .white)
+                        .shadow(color: .green.opacity(0.6), radius: 8)
                     
-                    // Green Pentagon Outline (extends beyond the card)
-                    HomePlateIcon(size: 120, strokeWidth: 4, color: .green)
-                        .opacity(0.6)
-                        .shadow(color: .green.opacity(0.8), radius: 12)
+                    Text("Tap to Place Home Plate")
+                        .foregroundColor(.white)
+                        .font(.headline)
+                        .fontWeight(.semibold)
+                        .multilineTextAlignment(.center)
                 }
-                
-                Spacer()
+                .padding(.bottom, 70)
             }
-            
-            Spacer()
         }
         .allowsHitTesting(false) // Allow taps to pass through to AR view
-    }
-    
-    // MARK: - Field Lines Toggle
-    
-    private var fieldLinesToggle: some View {
-        VStack {
-            Spacer()
-            
-            HStack {
-                Spacer()
-                
-                Button(action: { showFieldLines.toggle() }) {
-                    VStack(spacing: 8) {
-                        Image(systemName: showFieldLines ? "eye.fill" : "eye.slash.fill")
-                            .font(.title2)
-                        Text(showFieldLines ? "Hide Lines" : "Show Lines")
-                            .font(.caption)
-                    }
-                    .foregroundColor(.white)
-                    .padding(12)
-                    .background(showFieldLines ? Color.green.opacity(0.8) : Color.gray.opacity(0.8))
-                    .cornerRadius(12)
-                }
-                
-                Spacer()
-            }
-            
-            Spacer()
-        }
     }
     
     // MARK: - Ball Speed Display
@@ -216,187 +216,273 @@ struct ARBaseballTrackerView: View {
                 
                 Spacer()
             }
-            .padding(.bottom, 100)
+            .padding(.bottom, 100) // Already provides spacing from bottom
         }
     }
+    
     
     // MARK: - Positioning Controls Overlay
     
     private var positioningControlsOverlay: some View {
-        VStack {
-            Spacer()
+        ARPositionControlsView(
+            arTrackingService: arTrackingService,
+            showFieldLines: $showFieldLines,
+            onDone: {
+                hidePositioningControls()
+            },
+            onCancel: {
+                hidePositioningControls()
+            }
+        )
+    }
+    
+    // MARK: - Session Info Card Overlay
+    
+    private var sessionInfoCardOverlay: some View {
+        ZStack {
+            // Semi-transparent background - optimized for performance
+            Color.black.opacity(0.4)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    dismissSessionInfo()
+                }
             
-            VStack(spacing: 20) {
-                // Title
-                Text("Adjust Field Position")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                    .foregroundColor(.white)
+            // Slide-up card - optimized presentation
+            VStack {
+                Spacer()
                 
-                // Orientation Control
-                VStack(spacing: 8) {
-                    Text("Orientation")
-                        .font(.headline)
-                        .foregroundColor(.white)
+                if let id = sessionCode {
+                    // Get location from session's stored fieldLocation, fallback to current location
+                    let sessionLocation: CLLocation? = {
+                        if let session = sessionManager.currentSession,
+                           let fieldLocation = session.fieldLocation {
+                            return CLLocation(
+                                latitude: fieldLocation.latitude,
+                                longitude: fieldLocation.longitude
+                            )
+                        }
+                        return arTrackingService.currentLocation
+                    }()
                     
-                    HStack {
-                        Text("-180°")
-                            .font(.caption)
+                    SessionInfoCardView(
+                        sessionCode: id,
+                        sessionName: sessionManager.currentSession?.name,
+                        location: sessionLocation,
+                        onDismiss: {
+                            dismissSessionInfo()
+                        }
+                    )
+                    .padding(.bottom)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .move(edge: .bottom).combined(with: .opacity)
+                    ))
+                } else {
+                    // No session available
+                    VStack(spacing: 20) {
+                        Image(systemName: "exclamationmark.circle")
+                            .font(.system(size: 48))
                             .foregroundColor(.white.opacity(0.7))
                         
-                        Slider(value: $orientationAngle, in: -180...180, step: 1)
-                            .accentColor(.green)
+                        Text("No Active Session")
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.white)
                         
-                        Text("180°")
-                            .font(.caption)
+                        Text("Start a session to share your Session Code")
+                            .font(.subheadline)
                             .foregroundColor(.white.opacity(0.7))
-                    }
-                    
-                    Text("\(String(format: "%.0f", orientationAngle))°")
-                        .font(.caption)
-                        .foregroundColor(.green)
-                }
-                
-                // Position Controls
-                VStack(spacing: 12) {
-                    HStack {
-                        Text("X")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .frame(width: 20)
+                            .multilineTextAlignment(.center)
                         
-                        Slider(value: $positionX, in: -2...2, step: 0.1)
-                            .accentColor(.blue)
-                        
-                        Text("\(String(format: "%.1f", positionX))")
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                            .frame(width: 40)
+                        Button("Close") {
+                            dismissSessionInfo()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
                     }
-                    
-                    HStack {
-                        Text("Y")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .frame(width: 20)
-                        
-                        Slider(value: $positionY, in: -1...1, step: 0.1)
-                            .accentColor(.red)
-                        
-                        Text("\(String(format: "%.1f", positionY))")
-                            .font(.caption)
-                            .foregroundColor(.red)
-                            .frame(width: 40)
-                    }
-                    
-                    HStack {
-                        Text("Z")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .frame(width: 20)
-                        
-                        Slider(value: $positionZ, in: -2...2, step: 0.1)
-                            .accentColor(.purple)
-                        
-                        Text("\(String(format: "%.1f", positionZ))")
-                            .font(.caption)
-                            .foregroundColor(.purple)
-                            .frame(width: 40)
-                    }
-                }
-                
-                // Action Buttons
-                HStack(spacing: 20) {
-                    Button("Cancel") {
-                        hidePositioningControls()
-                    }
-                    .font(.headline)
-                    .foregroundColor(.white)
-                    .padding()
-                    .background(Color.red.opacity(0.8))
-                    .cornerRadius(12)
-                    
-                    Button("Done") {
-                        confirmPositioning()
-                    }
-                    .font(.headline)
-                    .foregroundColor(.white)
-                    .padding()
-                    .background(Color.green.opacity(0.8))
-                    .cornerRadius(12)
+                    .padding(40)
+                    .padding(.bottom)
+                    .background(
+                        RoundedRectangle(cornerRadius: 24)
+                            .fill(.ultraThinMaterial)
+                    )
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .move(edge: .bottom).combined(with: .opacity)
+                    ))
                 }
             }
-            .padding(20)
-            .background(.ultraThinMaterial)
-            .cornerRadius(20)
-            .padding(.horizontal, 40)
-            .padding(.bottom, 100)
         }
+        // Use explicit animation only when showing (not when hiding to prevent hang)
+        .animation(showSessionInfo ? .spring(response: 0.35, dampingFraction: 0.85) : nil, value: showSessionInfo)
+    }
+    
+    private func dismissSessionInfo() {
+        // Dismiss immediately without animation to prevent hang
+        showSessionInfo = false
+    }
+    
+    private var sessionCode: String? {
+        // Get session Code from current session (now stores the 6-digit code directly)
+        if let session = sessionManager.currentSession {
+            // Session Code should now be a 6-digit code (matches reference project pattern)
+            return session.id
+        }
+        // Fallback: Check connection status if session isn't available yet
+        if sessionManager.isHosting {
+            let components = sessionManager.connectionStatus.components(separatedBy: ": ")
+            if components.count > 1 {
+                let code = components.last ?? ""
+                return code.count == 6 ? code : nil
+            }
+        }
+        return nil
     }
     
     // MARK: - Control Buttons
     
     private var controlButtons: some View {
-        VStack {
+        HStack {
+            // Left Controls
+            VStack(alignment: .leading, spacing: 36) {
+                
+                Spacer()
+                // Adjust Orientation Button
+                createSimpleStatusButton(
+                    icon: "location.viewfinder",
+                    tooltip: "AR Tracking",
+                    action: showPositioningControlsView,
+                    isDisabled: !arTrackingService.isHomePlatePlaced,
+                    isActive: showPositioningControls
+                )
+                
+                // Show Hide Lines Button (toggles 3D geometry)
+                createSimpleStatusButton(
+                    icon: "field.of.view.wide",
+                    tooltip: "Overlay",
+                    action: showHideLines,
+                    isActive: showFieldLines
+                )
+                
+                // Info Button
+                createSimpleStatusButton(
+                    icon: "info.circle",
+                    tooltip: "Tooltips",
+                    action: showInfo,
+                    isActive: showTooltips
+                )
+            }
+            .padding(.leading, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+       
             Spacer()
             
-            HStack {
-                // Left Side Controls
-                VStack(spacing: 16) {
-                    // Adjust Orientation Button
-                    Button(action: showPositioningControlsView) {
-                        Image(systemName: "arrow.up.arrow.down")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                            .frame(width: 50, height: 50)
-                            .background(Color.green.opacity(0.8))
-                            .cornerRadius(12)
-                    }
-                    .disabled(!arTrackingService.isHomePlatePlaced)
-                    
-                    // Reset Tracking Button
-                    Button(action: resetTracking) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                            .frame(width: 50, height: 50)
-                            .background(Color.red.opacity(0.8))
-                            .cornerRadius(12)
-                    }
-                }
+            // Right Controls
+            VStack(alignment: .trailing, spacing: 36) {
                 
                 Spacer()
                 
-                // Right Side Controls
-                VStack(spacing: 16) {
-                    // Camera Button
-                    Button(action: captureScreenshot) {
-                        Image(systemName: "camera")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                            .frame(width: 50, height: 50)
-                            .background(Color.red.opacity(0.8))
-                            .cornerRadius(12)
-                    }
-                    .disabled(!arTrackingService.isHomePlatePlaced)
-                    
-                    // Info Button
-                    Button(action: showInfo) {
-                        Image(systemName: "info.circle")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                            .frame(width: 50, height: 50)
-                            .background(Color.red.opacity(0.8))
-                            .cornerRadius(12)
-                    }
-                }
+                // Tracking Ball Button
+                createSimpleStatusButton(
+                    icon: "figure.baseball",
+                    tooltip: "Track ball",
+                    action: trackingBall,
+                    isDisabled: !arTrackingService.isHomePlatePlaced,
+                    isActive: arTrackingService.trackingState == .trackingSpeed
+                )
+                
+                // Camera Button
+                createSimpleStatusButton(
+                    icon: "camera",
+                    tooltip: "Record",
+                    action: captureScreenshot,
+                    isDisabled: !arTrackingService.isHomePlatePlaced,
+                    isActive: false
+                )
+                
+                // Connection Settings Button
+                createSimpleStatusButton(
+                    icon: "network",
+                    tooltip: "Network",
+                    action: connectionSettings,
+                    isActive: false
+                )
             }
-            .padding(.horizontal, 30)
-            .padding(.bottom, 50)
+            .padding(.trailing, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
         }
     }
     
+    // MARK: - Button Factory
+    
+    private func createSimpleStatusButton(
+        icon: String,
+        tooltip: String,
+        action: @escaping () -> Void,
+        isDisabled: Bool = false,
+        isActive: Bool = false
+    ) -> some View {
+        VStack(spacing: 4) {
+            Button(action: action) {
+                Image(systemName: icon)
+                    .font(.title)
+                    .foregroundColor(isActive ? lightBlueColor  : .white) // Blue when active, white when inactive
+                    .frame(width: 60, height: 60)
+                    .background(.ultraThinMaterial)
+                    .cornerRadius(12)
+            }
+            .disabled(isDisabled)
+            
+            // Always render text with fixed height to prevent jumping
+            Text(tooltip)
+                .font(.caption2)
+                .foregroundColor(.black.opacity(1.0))
+                .lineLimit(1)
+                .frame(height: 18)
+                .frame(width: 70)
+                .background(.white.opacity(0.4))
+                .cornerRadius(5)
+                .opacity(showTooltips ? 1.0 : 0.0)
+        }
+        .frame(height: 72) // Fixed height: 50 (button) + 4 (spacing) + 18 (text) = 72
+    }
+    
     // MARK: - Actions
+    
+    private func ensureSessionInitialized() async {
+        // Check if session already exists (created from Host Game)
+        if sessionManager.currentSession != nil {
+            // Session already exists, ensure it's stored
+            if let sessionId = sessionManager.currentSession?.id {
+                await MainActor.run {
+                    lastSessionCode = sessionId
+                }
+            }
+            return
+        }
+        
+        // If no session exists but we have a last session code, try to rejoin
+        if !lastSessionCode.isEmpty {
+            let success = await sessionManager.rejoinSession(sessionCode: lastSessionCode)
+            if success {
+                print("✅ Rejoined session: \(lastSessionCode)")
+                return
+            }
+        }
+        
+        // No session available - create a new one
+        do {
+            let sessionCode = try await sessionManager.startHostingSession(name: UIDevice.current.name)
+            await MainActor.run {
+                lastSessionCode = sessionCode
+            }
+            print("✅ Created new session: \(sessionCode)")
+        } catch {
+            print("❌ Failed to create session: \(error)")
+        }
+    }
     
     private func initializeAR() async {
         await arTrackingService.initialize()
@@ -423,26 +509,18 @@ struct ARBaseballTrackerView: View {
         arTrackingService.displayPositioningControls()
     }
     
+    private func showHideLines() {
+        showFieldLines.toggle()
+    }
+    
     private func hidePositioningControls() {
         showPositioningControls = false
         arTrackingService.hidePositioningControls()
     }
     
-    private func confirmPositioning() {
-        arTrackingService.adjustOrientation(orientationAngle)
-        arTrackingService.adjustPosition(x: positionX, y: positionY, z: positionZ)
-        arTrackingService.confirmPositioning()
-        hidePositioningControls()
-    }
-    
-    private func resetTracking() {
-        arTrackingService.resetTracking()
-        showPositioningControls = false
-        orientationAngle = 0.0
-        positionX = 0.0
-        positionY = 0.0
-        positionZ = 0.0
-        showFieldLines = true
+    private func trackingBall() {
+        // TODO: Implement info display
+        print("ℹ️ Tracking Ball")
     }
     
     private func captureScreenshot() {
@@ -451,8 +529,14 @@ struct ARBaseballTrackerView: View {
     }
     
     private func showInfo() {
-        // TODO: Implement info display
-        print("ℹ️ Showing info")
+        showTooltips.toggle()
+    }
+    
+    private func connectionSettings() {
+        // Navigate to web view - ensure async to prevent blocking
+        Task { @MainActor in
+            showWebView = true
+        }
     }
 }
 
@@ -472,7 +556,13 @@ struct ARViewRepresentable: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: ARViewController, context: Context) {
+        let previousValue = uiViewController.showFieldLines
         uiViewController.showFieldLines = showFieldLines
+        
+        // Only update visibility if the value actually changed
+        if previousValue != showFieldLines {
+            uiViewController.updateFieldLinesVisibility()
+        }
     }
 }
 
@@ -514,6 +604,11 @@ class ARViewController: UIViewController {
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         let location = gesture.location(in: arView)
         onTap?(location)
+    }
+    
+    func updateFieldLinesVisibility() {
+        // Update field lines visibility through the AR tracking service
+        arTrackingService?.setFieldLinesVisibility(showFieldLines)
     }
     
     override func viewWillAppear(_ animated: Bool) {
