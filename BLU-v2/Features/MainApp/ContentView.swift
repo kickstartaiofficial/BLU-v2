@@ -17,47 +17,35 @@ struct ContentView: View {
     @State private var showingCoachDashboard = false
     @State private var showingARTracking = false
     @State private var showingJoinSession = false
-    @State private var showingRejoinSession = false
+    @State private var showingUmpireMode = false
     @AppStorage("hasCompletedPermissions") private var hasCompletedPermissions = false
     @AppStorage("lastSessionCode") private var lastSessionCode: String = ""
     @AppStorage("lastSessionName") private var lastSessionName: String = ""
     @State private var isCreatingSession = false
     
     enum ConnectionMode: String, CaseIterable {
-        case hostGame = "host"
-        case joinGame = "join"
-        case rejoinSession = "rejoin"
+        case umpireMode = "Umpire Mode"
+        case spectatorMode = "Spectator Mode"
         
         var title: String {
-            switch self {
-            case .hostGame:
-                return "Umpire Mode"
-            case .joinGame:
-                return "Spectator Mode"
-            case .rejoinSession:
-                return "Rejoin Session"
-            }
+            return rawValue
         }
         
         var description: String {
             switch self {
-            case .hostGame:
+            case .umpireMode:
                 return "Start a new session and invite others to join"
-            case .joinGame:
+            case .spectatorMode:
                 return "Connect to another player's session"
-            case .rejoinSession:
-                return "Resume hosting an existing session"
             }
         }
         
         var icon: String {
             switch self {
-            case .hostGame:
+            case .umpireMode:
                 return "wifi.router"
-            case .joinGame:
+            case .spectatorMode:
                 return "wifi"
-            case .rejoinSession:
-                return "arrow.clockwise.circle"
             }
         }
     }
@@ -100,9 +88,14 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingJoinSession) {
             JoinSessionView()
+                .environmentObject(sessionManager)
         }
-        .sheet(isPresented: $showingRejoinSession) {
-            RejoinSessionView()
+        .fullScreenCover(isPresented: $showingUmpireMode) {
+            UmpireModeView(onNavigateToAR: {
+                showingUmpireMode = false
+                showingARTracking = true
+            })
+            .environmentObject(sessionManager)
         }
         .fullScreenCover(isPresented: $showingARTracking) {
             ARBaseballTrackerView()
